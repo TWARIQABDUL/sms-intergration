@@ -1,9 +1,10 @@
 const express = require('express');
-const db = require('../db');
+const { db } = require('../db');
 const { newId } = require('../util/crypto');
 const { isValidE164, normalizePhone, isNonEmptyString } = require('../util/validators');
 const { requireApiKey, requireDeviceToken } = require('../middleware/auth');
 const { apiKeyLimiter, deviceTokenLimiter } = require('../middleware/rateLimit');
+const asyncHandler = require('../util/asyncHandler');
 
 const router = express.Router();
 
@@ -26,7 +27,7 @@ function toPublicMessage(row) {
 }
 
 // POST /api/sms/send - queue a new outbound message.
-router.post('/send', apiKeyLimiter, requireApiKey, (req, res) => {
+router.post('/send', apiKeyLimiter, requireApiKey, asyncHandler(async (req, res) => {
   const { to, body } = req.body || {};
 
   if (!isValidE164(to)) {
@@ -39,48 +40,52 @@ router.post('/send', apiKeyLimiter, requireApiKey, (req, res) => {
   const id = newId();
   const now = new Date().toISOString();
 
-  db.prepare(
-    `INSERT INTO messages (id, to_number, body, status, created_at, updated_at)
-     VALUES (?, ?, ?, 'pending', ?, ?)`
-  ).run(id, normalizePhone(to), body, now, now);
+  await db.execute({
+    sql: `INSERT INTO messages (id, to_number, body, status, created_at, updated_at)
+          VALUES (?, ?, ?, 'pending', ?, ?)`,
+    args: [id, normalizePhone(to), body, now, now],
+  });
 
   res.locals.messageId = id;
   res.status(201).json({ id });
-});
+}));
 
 // GET /api/sms/pending - device polls for work. Atomically claims up to
 // PENDING_BATCH_SIZE pending messages so concurrent/duplicate polls from the
 // same or another device never fetch the same row twice.
-router.get('/pending', deviceTokenLimiter, requireDeviceToken, (req, res) => {
+router.get('/pending', deviceTokenLimiter, requireDeviceToken, asyncHandler(async (req, res) => {
   const now = new Date().toISOString();
 
-  const claimed = db
-    .prepare(
-      `UPDATE messages
-       SET status = 'sent_to_device', device_id = ?, sent_to_device_at = ?, updated_at = ?
-       WHERE id IN (
-         SELECT id FROM messages WHERE status = 'pending' ORDER BY created_at LIMIT ?
-       )
-       RETURNING id, to_number, body`
-    )
-    .all(req.device.id, now, now, PENDING_BATCH_SIZE);
+  const claimed = await db.execute({
+    sql: `UPDATE messages
+          SET status = 'sent_to_device', device_id = ?, sent_to_device_at = ?, updated_at = ?
+          WHERE id IN (
+            SELECT id FROM messages WHERE status = 'pending' ORDER BY created_at LIMIT ?
+          )
+          RETURNING id, to_number, body`,
+    args: [req.device.id, now, now, PENDING_BATCH_SIZE],
+  });
 
-  db.prepare('UPDATE devices SET last_seen_at = ? WHERE id = ?').run(now, req.device.id);
+  await db.execute({
+    sql: 'UPDATE devices SET last_seen_at = ? WHERE id = ?',
+    args: [now, req.device.id],
+  });
 
   res.json({
-    messages: claimed.map((row) => ({ id: row.id, to: row.to_number, body: row.body })),
+    messages: claimed.rows.map((row) => ({ id: row.id, to: row.to_number, body: row.body })),
   });
-});
+}));
 
 // POST /api/sms/status - device reports the outcome of a send attempt.
-router.post('/status', deviceTokenLimiter, requireDeviceToken, (req, res) => {
+router.post('/status', deviceTokenLimiter, requireDeviceToken, asyncHandler(async (req, res) => {
   const { id, status, error } = req.body || {};
 
   if (!isNonEmptyString(id, 200) || !['delivered', 'failed'].includes(status)) {
     return res.status(400).json({ error: "id is required and status must be 'delivered' or 'failed'" });
   }
 
-  const message = db.prepare('SELECT * FROM messages WHERE id = ?').get(id);
+  const existing = await db.execute({ sql: 'SELECT * FROM messages WHERE id = ?', args: [id] });
+  const message = existing.rows[0];
   if (!message) {
     return res.status(404).json({ error: 'message not found' });
   }
@@ -92,25 +97,28 @@ router.post('/status', deviceTokenLimiter, requireDeviceToken, (req, res) => {
   res.locals.messageId = id;
 
   if (status === 'delivered') {
-    db.prepare(
-      `UPDATE messages SET status = 'delivered', delivered_at = ?, error = NULL, updated_at = ? WHERE id = ?`
-    ).run(now, now, id);
+    await db.execute({
+      sql: `UPDATE messages SET status = 'delivered', delivered_at = ?, error = NULL, updated_at = ? WHERE id = ?`,
+      args: [now, now, id],
+    });
   } else {
-    db.prepare(
-      `UPDATE messages SET status = 'failed', failed_at = ?, error = ?, updated_at = ? WHERE id = ?`
-    ).run(now, isNonEmptyString(error, 500) ? error : null, now, id);
+    await db.execute({
+      sql: `UPDATE messages SET status = 'failed', failed_at = ?, error = ?, updated_at = ? WHERE id = ?`,
+      args: [now, isNonEmptyString(error, 500) ? error : null, now, id],
+    });
   }
 
   res.json({ ok: true });
-});
+}));
 
 // GET /api/sms/:id - caller checks on the status of a previously sent message.
-router.get('/:id', apiKeyLimiter, requireApiKey, (req, res) => {
-  const message = db.prepare('SELECT * FROM messages WHERE id = ?').get(req.params.id);
+router.get('/:id', apiKeyLimiter, requireApiKey, asyncHandler(async (req, res) => {
+  const result = await db.execute({ sql: 'SELECT * FROM messages WHERE id = ?', args: [req.params.id] });
+  const message = result.rows[0];
   if (!message) {
     return res.status(404).json({ error: 'message not found' });
   }
   res.json(toPublicMessage(message));
-});
+}));
 
 module.exports = router;

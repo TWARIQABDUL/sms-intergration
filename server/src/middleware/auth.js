@@ -1,4 +1,4 @@
-const db = require('../db');
+const { db } = require('../db');
 const { hashToken } = require('../util/crypto');
 
 const VALID_API_KEYS = new Set(
@@ -16,18 +16,26 @@ function requireApiKey(req, res, next) {
   next();
 }
 
-function requireDeviceToken(req, res, next) {
+async function requireDeviceToken(req, res, next) {
   const token = req.header('x-device-token');
   if (!token) {
     return res.status(401).json({ error: 'missing X-Device-Token header' });
   }
-  const tokenHash = hashToken(token);
-  const device = db.prepare('SELECT id, name FROM devices WHERE token_hash = ?').get(tokenHash);
-  if (!device) {
-    return res.status(401).json({ error: 'invalid device token' });
+  try {
+    const tokenHash = hashToken(token);
+    const result = await db.execute({
+      sql: 'SELECT id, name FROM devices WHERE token_hash = ?',
+      args: [tokenHash],
+    });
+    const device = result.rows[0];
+    if (!device) {
+      return res.status(401).json({ error: 'invalid device token' });
+    }
+    req.device = device;
+    next();
+  } catch (err) {
+    next(err);
   }
-  req.device = device;
-  next();
 }
 
 module.exports = { requireApiKey, requireDeviceToken, VALID_API_KEYS };
