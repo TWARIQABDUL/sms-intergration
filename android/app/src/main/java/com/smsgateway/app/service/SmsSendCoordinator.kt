@@ -57,12 +57,30 @@ object SmsSendCoordinator {
             if (!success) tracking.lastError = error
         }
         val sentSoFar = tracking.sentOk + tracking.sentFail
-        if (tracking.sentFail > 0 && sentSoFar == tracking.totalParts) {
+        if (sentSoFar < tracking.totalParts) return
+
+        if (tracking.sentFail > 0) {
             // At least one part never made it off the device - no point waiting
             // for delivery reports that will never arrive for it.
             finalizeFailure(context, messageId, tracking.lastError ?: "send failed")
+        } else {
+            // Every part reached the radio. It must come out of the local retry
+            // queue now, regardless of whether a delivery confirmation ever
+            // arrives (many carriers never send one) - otherwise the next poll
+            // cycle's processDueRetries() would resend an already-sent message.
+            withContext(Dispatchers.IO) {
+                val dao = AppDatabase.get(context).failedMessageDao()
+                dao.getById(messageId)?.let { dao.delete(it) }
+                AppDatabase.get(context).sentLogDao().insert(
+                    SentLogEntry(
+                        messageId = messageId,
+                        to = tracking.to,
+                        status = "sent",
+                        timestampMillis = System.currentTimeMillis()
+                    )
+                )
+            }
         }
-        // If all parts sent OK, we wait for the delivery broadcasts instead.
     }
 
     suspend fun onPartDelivered(context: Context, messageId: String, success: Boolean) {
