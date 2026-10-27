@@ -146,6 +146,192 @@ If the carrier doesn't send delivery reports for a given route, `status` may
 stay at `sent_to_device` even though the SMS was actually delivered — that's
 a carrier limitation, not a bug in this system.
 
+## API Reference
+
+Everything you'd need to build an admin/dashboard UI against this backend.
+All endpoints are JSON in, JSON out, over HTTPS.
+
+### Auth
+
+Two separate header-based schemes — a dashboard typically only ever needs
+the first one.
+
+| Scheme | Header | Who holds it | Used by |
+|---|---|---|---|
+| API key | `X-API-Key: <key>` | your dashboard / server-side callers | `/api/sms/send`, `/api/sms/:id`, `/api/devices/register`, `/api/devices` |
+| Device token | `X-Device-Token: <token>` | the Android app, one per phone | `/api/sms/pending`, `/api/sms/status` |
+
+- API keys are static values from the `API_KEYS` env var (comma-separated —
+  you can issue more than one, e.g. one per dashboard/integration, and
+  revoke one by removing it from the list and redeploying).
+- Device tokens are minted by `POST /api/devices/register` and only ever
+  shown once in that response; the server stores just a SHA-256 hash.
+- Missing/invalid credentials → `401 {"error": "..."}`.
+
+### Rate limiting
+
+Every endpoint is rate-limited, keyed by the credential used (API key or
+device token; falls back to IP if neither is present). Limits are
+configurable via env vars (`RATE_LIMIT_WINDOW_MS`,
+`RATE_LIMIT_MAX_PER_API_KEY`, `RATE_LIMIT_MAX_PER_DEVICE_TOKEN`). Exceeding
+the limit → `429` with standard `RateLimit-*` response headers and
+`{"error": "rate limit exceeded for this API key|device token"}`.
+
+### Error shape
+
+Every error response is `{"error": "<human-readable message>"}` with a
+matching HTTP status (`400` validation, `401` auth, `403` forbidden, `404`
+not found, `429` rate limited, `500` unexpected server error). `500`
+responses never include request details — see the logging note below.
+
+### Message lifecycle
+
+```
+pending --(device polls)--> sent_to_device --(device reports outcome)--> delivered
+                                            \-> failed
+```
+
+A message can also sit at `sent_to_device` indefinitely if the carrier
+never sends a delivery confirmation — that's a carrier limitation, not a
+stuck state in this system (the SMS likely did arrive).
+
+### Endpoints
+
+#### `GET /health`
+No auth. Liveness check (useful for Render's health check / dashboard
+"is the backend up" indicator).
+
+```json
+{"ok": true}
+```
+
+---
+
+#### `POST /api/devices/register`
+Auth: `X-API-Key`. Provisions a new phone and issues its device token.
+
+Request body:
+```json
+{"name": "Pixel 7a - front desk"}
+```
+- `name`: required, non-empty string, max 100 chars.
+
+Response `201`:
+```json
+{"device_id": "uuid", "name": "Pixel 7a - front desk", "token": "64-hex-char secret"}
+```
+`token` is shown **only here** — the server only ever stores its hash.
+A dashboard that needs to re-issue a token for a phone should call this
+again with the same name (it creates a new device record with a new id;
+there's currently no "rotate token for existing device id" endpoint).
+
+---
+
+#### `GET /api/devices`
+Auth: `X-API-Key`. Lists registered devices — the natural data source for
+a dashboard's device table.
+
+Response `200`:
+```json
+{
+  "devices": [
+    {"id": "uuid", "name": "Pixel 7a - front desk", "created_at": "ISO-8601", "last_seen_at": "ISO-8601 | null"}
+  ]
+}
+```
+`last_seen_at` updates every time that device successfully calls
+`GET /api/sms/pending` — it's the field to watch for "is this phone still
+polling" in a dashboard.
+
+---
+
+#### `POST /api/sms/send`
+Auth: `X-API-Key`. Queues a new outbound message. This is the endpoint a
+dashboard's "send message" form submits to.
+
+Request body:
+```json
+{"to": "+15551234567", "body": "Hello"}
+```
+- `to`: required, E.164-ish (`+` optional, 8–15 digits, first digit 1-9).
+- `body`: required, 1–1600 chars (≈10 concatenated SMS segments).
+
+Response `201`:
+```json
+{"id": "uuid"}
+```
+Save this `id` — it's what you poll with `GET /api/sms/:id`.
+
+---
+
+#### `GET /api/sms/:id`
+Auth: `X-API-Key`. Full status of one message — what a dashboard's message
+detail view / status poller calls.
+
+Response `200`:
+```json
+{
+  "id": "uuid",
+  "to": "+15551234567",
+  "status": "pending | sent_to_device | delivered | failed",
+  "device_id": "uuid | null",
+  "error": "string | null",
+  "created_at": "ISO-8601",
+  "sent_to_device_at": "ISO-8601 | null",
+  "delivered_at": "ISO-8601 | null",
+  "failed_at": "ISO-8601 | null",
+  "updated_at": "ISO-8601"
+}
+```
+Note: this does **not** return `body` (message text isn't echoed back by
+design — see the logging/privacy note below; if a dashboard needs to show
+the original text, it should keep its own copy at send time).
+
+404 if the id doesn't exist.
+
+There's currently no "list all messages" endpoint — a dashboard that wants
+a message history/table would need to either keep its own record of every
+`id` it got back from `/api/sms/send`, or that's the first thing to add
+server-side (`GET /api/sms?status=&limit=&before=`) before building that view.
+
+---
+
+#### `GET /api/sms/pending`
+Auth: `X-Device-Token`. Called by the Android app, not a dashboard. Atomically
+claims up to 20 oldest `pending` messages for that device (marks them
+`sent_to_device` so no other poll — same device or another — refetches them).
+
+Response `200`:
+```json
+{"messages": [{"id": "uuid", "to": "+15551234567", "body": "Hello"}]}
+```
+
+---
+
+#### `POST /api/sms/status`
+Auth: `X-Device-Token`. Called by the Android app to report an outcome, not
+a dashboard. A device can only update messages it was itself assigned.
+
+Request body:
+```json
+{"id": "uuid", "status": "delivered", "error": "optional string, only meaningful when status is failed"}
+```
+
+Response `200`:
+```json
+{"ok": true}
+```
+`403` if the message wasn't assigned to the calling device's token.
+
+### Gaps to fill before building a full dashboard
+
+The above covers everything the current backend exposes. A real dashboard
+would likely also want (none of this exists yet — flagging it for later):
+- `GET /api/sms` — paginated/filterable message list (by status, device, date range)
+- A way to revoke/rotate a single device's token without re-registering
+- A way to revoke a single API key without redeploying with a new `API_KEYS` list
+- Webhooks or SSE/WebSocket push instead of polling, if a dashboard wants live updates
+
 ## Design notes / deviations worth knowing about
 
 - **Foreground service type**: there is no official Android foreground
