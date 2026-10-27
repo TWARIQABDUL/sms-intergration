@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install:*)",
+      "Bash(node src/server.js)",
+      "Read(//tmp/**)",
+      "Bash(fuser 3000/tcp)",
+      "Bash(curl -s http://localhost:3001/health)",
+      "Bash(pkill -f \"node src/server.js\")",
+      "Bash(PORT=58234 API_KEYS=test-key-123 DB_PATH=./data/sms-gateway.db node src/server.js)",
+      "Bash(curl -s http://localhost:58234/health)"
+    ]
+  }
+}

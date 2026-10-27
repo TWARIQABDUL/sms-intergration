@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SMS Gateway</string>
+    <string name="title_settings">Settings</string>
+
+    <string name="sms_permission_rationale_title">SMS permission needed</string>
+    <string name="sms_permission_rationale_body">This app sends text messages on your behalf, using messages queued by your server. It needs the "Send SMS" permission to do that. No message content is sent anywhere except to the phone number you specify.</string>
+    <string name="grant_permission">Grant permission</string>
+
+    <string name="battery_optimization_title">Keep the gateway running</string>
+    <string name="battery_optimization_body">Android may stop this app in the background to save battery, which would stop it from sending queued messages. Exempt it from battery optimization so the service keeps polling reliably.</string>
+    <string name="request_exemption">Disable battery optimization</string>
+
+    <string name="notification_channel_name">SMS Gateway Service</string>
+    <string name="notification_title_format">SMS Gateway running — %1$d sent today</string>
+
+    <string name="status_running">Running</string>
+    <string name="status_stopped">Stopped</string>
+    <string name="start_service">Start</string>
+    <string name="stop_service">Stop</string>
+</resources>

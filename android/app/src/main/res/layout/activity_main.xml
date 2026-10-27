@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <TextView
+        android:id="@+id/textStatus"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textSize="20sp"
+        android:textStyle="bold"
+        android:text="@string/status_stopped" />
+
+    <Button
+        android:id="@+id/buttonToggleService"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/start_service" />
+
+    <TextView
+        android:id="@+id/textSentToday"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:text="Sent today: 0" />
+
+    <TextView
+        android:id="@+id/textLastPoll"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Last poll: never" />
+
+    <TextView
+        android:id="@+id/textSignalStrength"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Signal: unknown" />
+
+    <Button
+        android:id="@+id/buttonSettings"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:text="@string/title_settings" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:textStyle="bold"
+        android:text="Recent activity" />
+
+    <ListView
+        android:id="@+id/listLog"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1" />
+
+</LinearLayout>
